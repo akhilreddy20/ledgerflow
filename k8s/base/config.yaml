@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ledgerflow-config
+data:
+  KAFKA_BROKERS: kafka:9092
+  KAFKA_PARTITIONS: "6"
+  REDIS_URL: redis://redis:6379
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  NODE_ENV: production
+---
+# DEV ONLY. In a real cluster use External Secrets / Sealed Secrets / a cloud secret manager.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ledgerflow-secrets
+type: Opaque
+stringData:
+  ledger-database-url: postgres://ledgerflow:ledgerflow@postgres:5432/ledger
+  payments-database-url: postgres://ledgerflow:ledgerflow@postgres:5432/payments
+  notifications-database-url: postgres://ledgerflow:ledgerflow@postgres:5432/notifications

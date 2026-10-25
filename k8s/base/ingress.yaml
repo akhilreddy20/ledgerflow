@@ -1,0 +1,14 @@
+# Optional: expose the public APIs through an NGINX ingress (minikube addons enable ingress / kind + ingress-nginx).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ledgerflow
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ledgerflow.localtest.me
+      http:
+        paths:
+          - { path: /payments, pathType: Prefix, backend: { service: { name: payments, port: { number: 3002 } } } }
+          - { path: /accounts, pathType: Prefix, backend: { service: { name: ledger, port: { number: 3001 } } } }
+          - { path: /transfers, pathType: Prefix, backend: { service: { name: ledger, port: { number: 3001 } } } }

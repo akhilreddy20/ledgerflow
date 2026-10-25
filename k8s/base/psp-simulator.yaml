@@ -1,0 +1,70 @@
+# psp-simulator: Deployment + Service + PodDisruptionBudget
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: psp-simulator
+  labels: { app: psp-simulator, part-of: ledgerflow }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: psp-simulator }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels: { app: psp-simulator, part-of: ledgerflow }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3004"
+        prometheus.io/path: /metrics
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: psp-simulator
+          image: ledgerflow/psp-simulator:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 3004 }
+          envFrom:
+            - configMapRef: { name: ledgerflow-config }
+          env:
+            - { name: PORT, value: "3004" }
+            - { name: OTEL_SERVICE_NAME, value: psp-simulator }
+            - { name: PSP_FAILURE_RATE, value: "0.02" }
+            - { name: PSP_DECLINE_RATE, value: "0.03" }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 128Mi }
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: psp-simulator
+  labels: { app: psp-simulator }
+spec:
+  selector: { app: psp-simulator }
+  ports:
+    - { name: http, port: 3004, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: psp-simulator
+spec:
+  maxUnavailable: 1   # single replica: allow node drains
+  selector:
+    matchLabels: { app: psp-simulator }

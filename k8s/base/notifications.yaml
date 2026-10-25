@@ -1,0 +1,70 @@
+# notifications: Deployment + Service + PodDisruptionBudget
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications
+  labels: { app: notifications, part-of: ledgerflow }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: notifications }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels: { app: notifications, part-of: ledgerflow }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3003"
+        prometheus.io/path: /metrics
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: notifications
+          image: ledgerflow/notifications:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 3003 }
+          envFrom:
+            - configMapRef: { name: ledgerflow-config }
+          env:
+            - { name: PORT, value: "3003" }
+            - { name: OTEL_SERVICE_NAME, value: notifications-service }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: ledgerflow-secrets, key: notifications-database-url } }
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 192Mi }
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications
+  labels: { app: notifications }
+spec:
+  selector: { app: notifications }
+  ports:
+    - { name: http, port: 3003, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: notifications
+spec:
+  maxUnavailable: 1   # single replica: allow node drains
+  selector:
+    matchLabels: { app: notifications }
