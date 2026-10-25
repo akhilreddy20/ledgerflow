@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: ledgerflow
+    folder: LedgerFlow
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
