@@ -1,0 +1,160 @@
+# Full local stack:  docker compose up -d --build
+# Infra only (run services with npm on the host):  docker compose up -d postgres redis kafka jaeger prometheus grafana kafka-ui
+name: ledgerflow
+
+x-service-env: &service-env
+  KAFKA_BROKERS: kafka:9092
+  REDIS_URL: redis://redis:6379
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  KAFKA_PARTITIONS: "6"
+
+x-service-deps: &service-deps
+  postgres: { condition: service_healthy }
+  redis: { condition: service_healthy }
+  kafka: { condition: service_healthy }
+
+services:
+  # ------------------------------------------------------------------ infrastructure
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ledgerflow
+      POSTGRES_PASSWORD: ledgerflow
+      POSTGRES_DB: ledgerflow
+    command: ["postgres", "-c", "max_connections=300", "-c", "shared_buffers=256MB"]
+    ports: ["5432:5432"]
+    volumes:
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledgerflow"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 20
+
+  # Single-node Kafka in KRaft mode (no ZooKeeper).
+  # Two listeners: kafka:9092 for containers, localhost:29092 for apps running on your machine.
+  kafka:
+    image: apache/kafka:3.8.0
+    ports: ["29092:29092"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 6
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 5s
+      retries: 30
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    ports: ["8080:8080"]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: ledgerflow
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka: { condition: service_healthy }
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    ports:
+      - "16686:16686" # UI
+      - "4318:4318"   # OTLP over HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    ports: ["9090:9090"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    ports: ["3005:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]
+
+  # ------------------------------------------------------------------ application services
+  ledger:
+    build: { context: ., args: { SERVICE: ledger } }
+    image: ledgerflow/ledger:local
+    ports: ["3001:3001"]
+    environment:
+      <<: *service-env
+      PORT: "3001"
+      OTEL_SERVICE_NAME: ledger-service
+      DATABASE_URL: postgres://ledgerflow:ledgerflow@postgres:5432/ledger
+    depends_on: *service-deps
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/ready || exit 1"]
+      interval: 5s
+      retries: 20
+
+  payments:
+    build: { context: ., args: { SERVICE: payments } }
+    image: ledgerflow/payments:local
+    ports: ["3002:3002"]
+    environment:
+      <<: *service-env
+      PORT: "3002"
+      OTEL_SERVICE_NAME: payments-service
+      DATABASE_URL: postgres://ledgerflow:ledgerflow@postgres:5432/payments
+      PSP_URL: http://psp-simulator:3004
+    depends_on:
+      <<: *service-deps
+      psp-simulator: { condition: service_started }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3002/ready || exit 1"]
+      interval: 5s
+      retries: 20
+
+  notifications:
+    build: { context: ., args: { SERVICE: notifications } }
+    image: ledgerflow/notifications:local
+    ports: ["3003:3003"]
+    environment:
+      <<: *service-env
+      PORT: "3003"
+      OTEL_SERVICE_NAME: notifications-service
+      DATABASE_URL: postgres://ledgerflow:ledgerflow@postgres:5432/notifications
+    depends_on: *service-deps
+
+  psp-simulator:
+    build: { context: ., args: { SERVICE: psp-simulator } }
+    image: ledgerflow/psp-simulator:local
+    ports: ["3004:3004"]
+    environment:
+      PORT: "3004"
+      OTEL_SERVICE_NAME: psp-simulator
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      PSP_FAILURE_RATE: "0.02"
+      PSP_DECLINE_RATE: "0.03"
+
+volumes:
+  pgdata:
