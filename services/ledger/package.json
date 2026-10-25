@@ -1,0 +1,7 @@
+{
+  "name": "@ledgerflow/ledger",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/main.js",
+  "dependencies": { "@ledgerflow/common": "1.0.0" }
+}

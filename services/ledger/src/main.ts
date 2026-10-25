@@ -1,0 +1,14 @@
+import 'reflect-metadata';
+import { NestFactory } from '@nestjs/core';
+import { configureApp, envInt } from '@ledgerflow/common';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule, { logger: ['log', 'warn', 'error'] });
+  configureApp(app);
+  const port = envInt('PORT', 3001);
+  await app.listen(port);
+  console.log(`ledger-service listening on :${port}`);
+}
+
+bootstrap();
